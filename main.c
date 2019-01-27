@@ -6,72 +6,91 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <pthread.h>
+#include <time.h>
+#include <locale.h>
 #include <ncurses.h>
+#include <errno.h>
 
+#define LOGSIZE 64
 #define TXTSIZE 1024
-#define PWDSIZE 1024
+
+int sock,sockls,sockcn,sockls_new;
 
 //Для программы месседжера выберем обмен массивами типа char,
 //следовательно, n=8
+void rc4crypt(const char *input, unsigned msg_len, char *output, const char *key, unsigned key_len);
 
-void rc4crypt(const char *input, char *output, const char *key, unsigned length=256);
+void* th0_func(void *arg);
+void* th1_func(void *arg);
+void* th2_func(void *arg);
 
 int main(int argc, char *argv[])
  {
+ setlocale(LC_ALL, "");
+ initscr();
  //1. инициализация сокета ip-адресом
- int sock1, sock2;
- struct sockaddr_in c1addr,c2addr;
+ int sock2;
+ struct sockaddr_in c1addr;
  u_int16_t port;
  struct mymsgbuf
   {
+  char log[LOGSIZE];
   char mtext[TXTSIZE];
-  char pwd[PWDSIZE];
-  } msg;
+  } snd_msg;
 
- printf("Input port:");
- scanf("%i",&port);
- port[4]=0;
+ printw("Input port:");
+ refresh();
+ scanw("%i",&port);
 
- sock1=socket(AF_INET,SOCK_STREAM,0);
- if(sock1==-1)
+ sockcn=socket(AF_INET,SOCK_STREAM,0);
+ if(sockcn==-1)
+  {
+  perror("socket()");
+  return -1;
+  }
+
+ sockls=socket(AF_INET,SOCK_STREAM,0);
+ if(sockls==-1)
   {
   perror("socket()");
   return -1;
   }
  memset((void*)&c1addr,0,sizeof(c1addr));
- c1addr.sin_family=AF_UNIX;
+ c1addr.sin_family=AF_INET;
  c1addr.sin_port=htons(port);
  c1addr.sin_addr.s_addr=inet_addr("127.0.0.1");
 
- if(bind(sock1,(struct sockaddr*)&c1addr,sizeof(c1addr))==-1)
+ if(bind(sockls,(struct sockaddr*)&c1addr,sizeof(c1addr))==-1)
   {
   perror("bind()");
   return -1;
   }
 
+ printw("Input your name:");
+ refresh();
+ scanw("%s",snd_msg.log);
+
  //2. интерактив с выбором конечного узла (сохранённые)
- int pfd[2];
- pipe(pfd);
- if(fork()==0)
+ void* retval=NULL;
+ pthread_t thid[3];
+
+ while(1)
   {
-  close(1);
-  close(3);
-  dup(4);
-
-  socklen_t c2sock_len;
-
-  listen(sock1,1);
-  c2sock_len=sizeof(c2addr);
-  accept(sock1,(struct sockaddr*)&c2addr,&c2sock_len);
-  while(1)
-   {
-   recv(sock1,(void*)&msg,sizeof(msg),0);
-
-   }
+  pthread_create(&thid[0],NULL,th0_func,(void*)&thid[1]);
+  pthread_create(&thid[1],NULL,th1_func,(void*)&thid[0]);
+  pthread_join(thid[0],&retval);
+  if(retval==(void*)0)
+   break;
+  pthread_join(thid[1],&retval);
+  if(retval==(void*)0)
+   break;
   }
- close(4);
- //3. fork(): один пишет, другой принимает
 
+ printw("\nEVERYTHING IS NICE\n");
+ refresh();
+
+ //3. fork(): один пишет, другой принимает
+ endwin();
  return 0;
  }
 
@@ -106,4 +125,96 @@ void rc4crypt(const char *input, unsigned msg_len, char *output, const char *key
 
   output[n]=input[n]^S[S[i]+S[j]];
   }
+ }
+
+void* th0_func(void *arg)
+ {
+ pthread_setcancelstate(PTHREAD_CANCEL_ENABLE,0);
+
+ struct sockaddr_in c2addr;
+ socklen_t c2sock_len;
+ u_int16_t port;
+ char ip_addr[16];
+ memset((void*)ip_addr,0,16);
+
+ printw("\n\rInput ip-address to connect:");
+ refresh();
+ scanw("%s",ip_addr);
+ printw("Input port:");
+ refresh();
+ scanw("%i",&port);
+
+ memset((void*)&c2addr,0,sizeof(c2addr));
+ c2addr.sin_family=AF_INET;
+ c2addr.sin_port=htons(port);
+ c2addr.sin_addr.s_addr=inet_addr(ip_addr);
+
+ pthread_cancel(*(pthread_t*)arg);
+ if(connect(sockcn,(struct sockaddr*)&c2addr,sizeof(c2addr))<0)
+  {
+  printw("connect(): %s\n",strerror(errno));
+  refresh();
+  pthread_exit((void*)1);
+  }
+
+ sock=sockcn;
+ pthread_exit((void*)0);
+ }
+
+void* th1_func(void *arg)
+ {
+ pthread_setcancelstate(PTHREAD_CANCEL_ENABLE,0);
+
+ struct sockaddr_in c2addr;
+ socklen_t c2sock_len;
+ char reply;
+
+ listen(sockls,1);
+
+ c2sock_len=sizeof(c2addr);
+ sockls_new=accept(sockls,(struct sockaddr*)&c2addr,&c2sock_len);
+
+ pthread_cancel(*(pthread_t*)arg);
+ printw("\nThere is a request for connection, accept (Y/N)?:");
+ refresh();
+ while(1)
+  {
+  scanw("%c",&reply);
+  if(reply=='Y')
+   break;
+  if(reply=='N')
+   {
+   close(sockls_new);
+   pthread_exit((void*)1);
+   }
+  printw("Try again, accept (Y/N)?:");
+  refresh();
+  }
+
+ sock=sockls_new;
+ pthread_exit((void*)0);
+ }
+
+void* th2_func(void *arg)
+ {
+ time_t t;
+ struct tm *tmtime;
+ char buff[10];
+ struct mymsgbuf
+  {
+  char log[LOGSIZE];
+  char mtext[TXTSIZE];
+  } rcv_msg;
+
+ while(1)
+  {
+  recv(sockls,(void*)&rcv_msg,sizeof(rcv_msg),0);
+  t=time(NULL);
+  tmtime=localtime(&t);
+  strftime(buff, 10, "%T", tmtime);
+  //расшифровка
+  printw("<%s> %s\n%s",rcv_msg.log,buff,rcv_msg.mtext);
+  refresh();
+  }
+ return NULL;
  }

@@ -28,6 +28,9 @@ int main(int argc, char *argv[])
  {
  setlocale(LC_ALL, "");
  initscr();
+ scrollok(stdscr,TRUE);
+ echo();
+
  //1. инициализация сокета ip-адресом
  int sock2;
  struct sockaddr_in c1addr;
@@ -68,7 +71,7 @@ int main(int argc, char *argv[])
 
  printw("Input your name:");
  refresh();
- scanw("%s",snd_msg.log);
+ getstr(snd_msg.log);
 
  //2. интерактив с выбором конечного узла (сохранённые)
  void* retval=NULL;
@@ -86,9 +89,29 @@ int main(int argc, char *argv[])
    break;
   }
 
- printw("\nEVERYTHING IS NICE\n");
+ printw("\nEVERYTHING IS NICE\n\n");
  refresh();
 
+ pthread_create(&thid[2],NULL,th2_func,NULL);
+
+ time_t t;
+ struct tm *tmtime;
+ char buff[10];
+ while(1)
+  {
+  printw("you>> ");
+  refresh();
+  memset((void*)snd_msg.mtext,0,TXTSIZE);
+  getstr(snd_msg.mtext);
+  send(sock,(void*)&snd_msg,sizeof(snd_msg),0);
+
+  t=time(NULL);
+  tmtime=localtime(&t);
+  strftime(buff, 10, "%T", tmtime);
+  getmaxx(stdscr);
+  mvprintw(getcury(stdscr)-(1+(6+strlen(snd_msg.mtext))/getmaxx(stdscr)),0,
+           "<you, %s> %s\n%s\n\n",snd_msg.log,buff,snd_msg.mtext);
+  }
  //3. fork(): один пишет, другой принимает
  endwin();
  return 0;
@@ -175,7 +198,8 @@ void* th1_func(void *arg)
  sockls_new=accept(sockls,(struct sockaddr*)&c2addr,&c2sock_len);
 
  pthread_cancel(*(pthread_t*)arg);
- printw("\nThere is a request for connection, accept (Y/N)?:");
+ printw("\nThere is a request for connection from:\n"
+        "ip %s:%i \naccept (Y/N)?:",inet_ntoa(c2addr.sin_addr),ntohs(c2addr.sin_port));
  refresh();
  while(1)
   {
@@ -208,12 +232,13 @@ void* th2_func(void *arg)
 
  while(1)
   {
-  recv(sockls,(void*)&rcv_msg,sizeof(rcv_msg),0);
+  recv(sock,(void*)&rcv_msg,sizeof(rcv_msg),0);
   t=time(NULL);
   tmtime=localtime(&t);
   strftime(buff, 10, "%T", tmtime);
   //расшифровка
-  printw("<%s> %s\n%s",rcv_msg.log,buff,rcv_msg.mtext);
+  //getmaxyx(stdscr,row,col);
+  mvprintw(getcury(stdscr),0,"<%s> %s\n%s\n\nyou>> ",rcv_msg.log,buff,rcv_msg.mtext);
   refresh();
   }
  return NULL;

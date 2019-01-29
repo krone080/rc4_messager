@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <sys/types.h>
@@ -10,54 +11,84 @@
 #include <locale.h>
 #include <ncurses.h>
 #include <errno.h>
+#include <gmp.h>
 
 #define LOGSIZE 64
-#define TXTSIZE 1024
+#define TXTSIZE 256
 
 int sock,sockls,sockcn,sockls_new;
 
+struct msg_t
+ {
+ char log[LOGSIZE];
+ char mtext[TXTSIZE];
+ };
+
 //Для программы месседжера выберем обмен массивами типа char,
 //следовательно, n=8
-void rc4crypt(const char *input, unsigned msg_len, char *output, const char *key, unsigned key_len);
+void RC4crypt(const char *input, unsigned msg_len, char *output, const char *key, unsigned key_len);
+
+//Пытался сделать протокол Диффи-Хелмана
+//void simple256DH(char *gen_key, int sock)
+// {
+//A=g^a(mod p)
+// mpz_t A[32],g,a,p;
+// mpz_inits(g,p,a,NULL);
+// for(unsigned i=0;i<32;++i)
+//  mpz_init(A[i]);
+//p=2^64, посчитано на Wolfram
+// mpz_set_str(p,"18446744073709551616",10);
+//p=2^31-1, walfram говорит, что число простое, является ли оно первообразным корнем сказать трудно,
+//по крайней мере, оно точно взаимно просто с 2^256, и его показатель не 2 (среди делителей 2^64-2^63)
+// mpz_set_str(g,"2147483647",10);
+ 
+// gmp_randstate_t state;
+// gmp_randinit_default(state);
+// gmp_randseed_ui(state,time(NULL));
+// for(unsigned i=0;i<32;++i)
+//  {
+//  mpz_urandomb(a,state,64);
+//  }
+// }
 
 void* th0_func(void *arg);
 void* th1_func(void *arg);
 void* th2_func(void *arg);
 
-int main(int argc, char *argv[])
+int main()
  {
  setlocale(LC_ALL, "");
+ //функция инициализации библиотеки ncurses и функция для включения прокручивания окна
  initscr();
  scrollok(stdscr,TRUE);
- echo();
 
- //1. инициализация сокета ip-адресом
- int sock2;
  struct sockaddr_in c1addr;
  u_int16_t port;
- struct mymsgbuf
-  {
-  char log[LOGSIZE];
-  char mtext[TXTSIZE];
-  } snd_msg;
+ 
+ struct msg_t snd_msg,buff_msg;
 
  printw("Input port:");
  refresh();
  scanw("%i",&port);
 
+ //сокет, который будет пытаться соединиться через connect
  sockcn=socket(AF_INET,SOCK_STREAM,0);
  if(sockcn==-1)
   {
-  perror("socket()");
+  printw("socket(): %s\n",strerror(errno));
+  refresh();
   return -1;
   }
 
+ //сокет, который будет слушать запросы на соединение через listen
  sockls=socket(AF_INET,SOCK_STREAM,0);
  if(sockls==-1)
   {
-  perror("socket()");
+  printw("socket(): %s\n",strerror(errno));
+  refresh();
   return -1;
   }
+
  memset((void*)&c1addr,0,sizeof(c1addr));
  c1addr.sin_family=AF_INET;
  c1addr.sin_port=htons(port);
@@ -65,18 +96,21 @@ int main(int argc, char *argv[])
 
  if(bind(sockls,(struct sockaddr*)&c1addr,sizeof(c1addr))==-1)
   {
-  perror("bind()");
+  printw("bind(): %s\n",strerror(errno));
+  refresh();
   return -1;
   }
 
  printw("Input your name:");
  refresh();
- getstr(snd_msg.log);
+ memset(buff_msg.log,0,LOGSIZE);
+ getstr(buff_msg.log);
 
- //2. интерактив с выбором конечного узла (сохранённые)
  void* retval=NULL;
  pthread_t thid[3];
 
+ //либо подключаемся к удалённому сокету, либо подключаются к нашу сокету
+ //пока одно из двух не выполнится, из цикла не выходим
  while(1)
   {
   pthread_create(&thid[0],NULL,th0_func,(void*)&thid[1]);
@@ -89,49 +123,68 @@ int main(int argc, char *argv[])
    break;
   }
 
- printw("\nEVERYTHING IS NICE\n\n");
- refresh();
+ printw("\nEVERYTHING IS NICE\n\n"
+        "\nInput key: ");
 
- pthread_create(&thid[2],NULL,th2_func,NULL);
+ //Ввод ключа, который потом будет использоваться при шифровании и расшифровании
+ char key[257];
+ memset((void*)key,0,257);
+ getstr(key);
+
+ //создаём поток для получения и вывода сообщений
+ pthread_create(&thid[2],NULL,th2_func,(void*)key);
 
  time_t t;
  struct tm *tmtime;
- char buff[10];
+ char time_buff[10];
+
+ //Набор, шифрование и отправка сообщения, а также вывод его у себя на экране
+ //в определённом формате
  while(1)
   {
+  //набираем сообщение
   printw("you>> ");
   refresh();
-  memset((void*)snd_msg.mtext,0,TXTSIZE);
-  getstr(snd_msg.mtext);
-  send(sock,(void*)&snd_msg,sizeof(snd_msg),0);
+  memset((void*)buff_msg.mtext,0,TXTSIZE);
+  getstr(buff_msg.mtext);
+  
+  //шифруем
+  memset((void*)snd_msg.log,0,LOGSIZE);
+  RC4crypt(buff_msg.log,strlen(buff_msg.log),snd_msg.log,key,strlen(key));
 
+  memset((void*)snd_msg.mtext,0,TXTSIZE);
+  RC4crypt(buff_msg.mtext,strlen(buff_msg.mtext),snd_msg.mtext,key,strlen(key));
+  //отправляем
+  send(sock,(void*)&snd_msg,sizeof(snd_msg),0); 
+
+  //выводим у себя отправленное сообщение
   t=time(NULL);
   tmtime=localtime(&t);
-  strftime(buff, 10, "%T", tmtime);
-  getmaxx(stdscr);
-  mvprintw(getcury(stdscr)-(1+(6+strlen(snd_msg.mtext))/getmaxx(stdscr)),0,
-           "<you, %s> %s\n%s\n\n",snd_msg.log,buff,snd_msg.mtext);
+  strftime(time_buff, 10, "%T", tmtime);
+  mvprintw(getcury(stdscr)-(1+(6+strlen(buff_msg.mtext))/getmaxx(stdscr)),0,
+           "<you, %s> %s\n%s\n\n",buff_msg.log,time_buff,buff_msg.mtext);
   }
- //3. fork(): один пишет, другой принимает
+
  endwin();
  return 0;
  }
 
-void rc4crypt(const char *input, unsigned msg_len, char *output, const char *key, unsigned key_len)
+void RC4crypt(const char *input, unsigned msg_len, char *output, const char *key, unsigned key_len)
  {
  char S[256];
 
  for(unsigned i=0;i<256;++i)
   S[i]=i;
 
- char j=0,X;
+ char j=0,X,Y;
 
  for(unsigned i=0;i<256;++i)
   {
   j=j+S[i]+key[i%key_len];//%256
 
   X=S[i];
-  S[i]=S[j];
+  Y=S[j];
+  S[i]=Y;
   S[j]=X;
   }
 
@@ -143,13 +196,15 @@ void rc4crypt(const char *input, unsigned msg_len, char *output, const char *key
   j=j+S[i];//%256
 
   X=S[i];
-  S[i]=S[j];
+  Y=S[j];
+  S[i]=Y;
   S[j]=X;
 
   output[n]=input[n]^S[S[i]+S[j]];
   }
  }
 
+//В этом потоке программа пытается подключиться к удалённому сокету
 void* th0_func(void *arg)
  {
  pthread_setcancelstate(PTHREAD_CANCEL_ENABLE,0);
@@ -184,6 +239,7 @@ void* th0_func(void *arg)
  pthread_exit((void*)0);
  }
 
+//В этом потоке программа слушает запросы на соединение и соединяется, если надо
 void* th1_func(void *arg)
  {
  pthread_setcancelstate(PTHREAD_CANCEL_ENABLE,0);
@@ -200,6 +256,7 @@ void* th1_func(void *arg)
  pthread_cancel(*(pthread_t*)arg);
  printw("\nThere is a request for connection from:\n"
         "ip %s:%i \naccept (Y/N)?:",inet_ntoa(c2addr.sin_addr),ntohs(c2addr.sin_port));
+ echo();
  refresh();
  while(1)
   {
@@ -219,26 +276,31 @@ void* th1_func(void *arg)
  pthread_exit((void*)0);
  }
 
+//В этом потоке программа принимает сообщения, расшифровывает их и выводин на экран
 void* th2_func(void *arg)
  {
  time_t t;
  struct tm *tmtime;
- char buff[10];
- struct mymsgbuf
-  {
-  char log[LOGSIZE];
-  char mtext[TXTSIZE];
-  } rcv_msg;
+ char time_buff[10];
+ struct msg_t rcv_msg,buff_msg;
 
  while(1)
   {
-  recv(sock,(void*)&rcv_msg,sizeof(rcv_msg),0);
+  if(recv(sock,(void*)&buff_msg,sizeof(rcv_msg),0)==-1)
+   {
+   printw("Probably connection is lost\nrecv(): %s\n",strerror(errno));
+   refresh();
+   exit(1);
+   }
   t=time(NULL);
   tmtime=localtime(&t);
-  strftime(buff, 10, "%T", tmtime);
-  //расшифровка
-  //getmaxyx(stdscr,row,col);
-  mvprintw(getcury(stdscr),0,"<%s> %s\n%s\n\nyou>> ",rcv_msg.log,buff,rcv_msg.mtext);
+  strftime(time_buff, 10, "%T", tmtime);
+
+  memset((void*)rcv_msg.log,0,LOGSIZE);
+  RC4crypt(buff_msg.log,strlen(buff_msg.log),rcv_msg.log,(char*)arg,strlen((char*)arg));
+  memset((void*)rcv_msg.mtext,0,TXTSIZE);
+  RC4crypt(buff_msg.mtext,strlen(buff_msg.mtext),rcv_msg.mtext,(char*)arg,strlen((char*)arg));
+  mvprintw(getcury(stdscr),0,"<%s> %s\n%s\n\nyou>> ",rcv_msg.log,time_buff,rcv_msg.mtext);
   refresh();
   }
  return NULL;

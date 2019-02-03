@@ -11,7 +11,6 @@
 #include <locale.h>
 #include <ncurses.h>
 #include <errno.h>
-#include <gmp.h>
 
 #define LOGSIZE 64
 #define TXTSIZE 256
@@ -101,7 +100,7 @@ int main()
   return -1;
   }
 
- printw("Input your name:");
+ printw("Input your name (max lenght %i):",LOGSIZE);
  refresh();
  memset(buff_msg.log,0,LOGSIZE);
  getstr(buff_msg.log);
@@ -124,7 +123,8 @@ int main()
   }
 
  printw("\nEVERYTHING IS NICE\n\n"
-        "\nInput key: ");
+        "Max message length is %i\n"
+        "Input key (max length %i): ",TXTSIZE,256);
 
  //Ввод ключа, который потом будет использоваться при шифровании и расшифровании
  char key[257];
@@ -171,36 +171,36 @@ int main()
 
 void RC4crypt(const char *input, unsigned msg_len, char *output, const char *key, unsigned key_len)
  {
- char S[256];
+ unsigned char array[256];
+ unsigned char j,tmp,t,i;
 
- for(unsigned i=0;i<256;++i)
-  S[i]=i;
+ for(unsigned k=0;k<256;++k)
+  array[k]=k;
 
- char j=0,X,Y;
+ j=0;
 
- for(unsigned i=0;i<256;++i)
+ for(unsigned k=0;k<256;++k)
   {
-  j=j+S[i]+key[i%key_len];//%256
+  j=j+array[k]+key[k%key_len];//%256
 
-  X=S[i];
-  Y=S[j];
-  S[i]=Y;
-  S[j]=X;
+  tmp=array[k];
+  array[k]=array[j];
+  array[j]=tmp;
   }
 
- char i=0,K;
- j=0;
- for(unsigned n=0;n<msg_len;++n)
+ i=j=0;
+
+ for(unsigned k=0;k<msg_len;++k)
   {
   ++i;//%256
-  j=j+S[i];//%256
+  j+=array[i];//%256
 
-  X=S[i];
-  Y=S[j];
-  S[i]=Y;
-  S[j]=X;
+  tmp=array[i];
+  array[i]=array[j];
+  array[j]=tmp;
 
-  output[n]=input[n]^S[S[i]+S[j]];
+  t=array[i]+array[j];
+  output[k]=input[k]^array[t];
   }
  }
 
@@ -210,7 +210,6 @@ void* th0_func(void *arg)
  pthread_setcancelstate(PTHREAD_CANCEL_ENABLE,0);
 
  struct sockaddr_in c2addr;
- socklen_t c2sock_len;
  u_int16_t port;
  char ip_addr[16];
  memset((void*)ip_addr,0,16);
@@ -301,6 +300,7 @@ void* th2_func(void *arg)
   memset((void*)rcv_msg.mtext,0,TXTSIZE);
   RC4crypt(buff_msg.mtext,strlen(buff_msg.mtext),rcv_msg.mtext,(char*)arg,strlen((char*)arg));
   mvprintw(getcury(stdscr),0,"<%s> %s\n%s\n\nyou>> ",rcv_msg.log,time_buff,rcv_msg.mtext);
+//  setsyx(getcury(stdscr)+(1+(6+strlen(rcv_msg.mtext))/getmaxx(stdscr)),6);
   refresh();
   }
  return NULL;
